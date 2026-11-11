@@ -1,0 +1,3 @@
+PySide6>=6.6
+numpy>=1.26
+cupy-cuda12x[ctk]>=13.0
