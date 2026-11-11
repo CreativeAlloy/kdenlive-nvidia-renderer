@@ -75,7 +75,7 @@ On a 7-minute 720p project with 5 color effects, on an RTX 5090:
 | Kdenlive / melt (CPU) | ~6 min (~28 fps) |
 | this renderer, H.264 NVENC | **38 s** (~290 fps) |
 
-The Deesser is the one audio effect that runs sample by sample, so it can't be vectorised; its state lives on the GPU. It costs about 2.6 ms per video frame, so a Deesser on a clip covering this whole 7-minute project adds roughly 27 s.
+The Deesser is the one audio effect that runs sample by sample, so it can't be vectorised; its state lives on the GPU. It costs about 2.6 ms per video frame.
 
 ## Note on Kdenlive and number locales
 
