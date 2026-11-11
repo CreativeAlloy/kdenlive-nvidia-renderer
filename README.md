@@ -26,7 +26,7 @@ Each effect is a port of the MLT, frei0r or FFmpeg code that Kdenlive uses, so t
 ```bash
 ./run.sh                      # first run creates .venv and installs PySide6, numpy, CuPy
 ./run.sh path/to/project.kdenlive
-./install-desktop-entry.sh    # optional: add it to the application menu / "Open With"
+./install-desktop-entry.sh    # optional: app menu, "Open With", and a right-click "Render with Nvidia" in Nemo
 ```
 
 There is also a command-line front end:

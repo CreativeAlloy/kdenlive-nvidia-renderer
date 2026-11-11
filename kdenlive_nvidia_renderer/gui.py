@@ -352,7 +352,9 @@ class MainWindow(QMainWindow):
         self._fill_fps(project)
         self._fill_ranges(project, report)
         base = os.path.splitext(path)[0]
-        out_dir = self.settings_store.value("last_output_dir", os.path.dirname(path))
+        out_dir = self.settings_store.value("last_output_dir", "")
+        if not out_dir or not os.path.isdir(out_dir):
+            out_dir = os.path.dirname(path)
         self.ed_out.setText(os.path.join(out_dir, os.path.basename(base) + ".mp4"))
         self.btn_render.setEnabled(True)
         self.btn_folder.setEnabled(False)
