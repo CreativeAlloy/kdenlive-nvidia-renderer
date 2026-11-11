@@ -442,6 +442,48 @@ __global__ void blur_pass(const float* src, float* dst, int w, int h, const floa
     o[3] = a;
 }
 
+// ------------------------------------------------------------------ frei0r scale0tilt (gavl scaler)
+// Separable resample driven by per-axis tap tables.  The source is the 8-bit RGBA frame MLT hands to
+// frei0r, and the result is 8-bit too, so quantise on the way in and out.
+__global__ void tap_pass_h(const float* src, int sw, int sh, float* dst, int dw,
+                           const int* idx, const float* wgt, int ntaps)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= dw || y >= sh) return;
+    float r = 0.f, g = 0.f, b = 0.f, a = 0.f;
+    for (int k = 0; k < ntaps; ++k) {
+        float w = wgt[x * ntaps + k];
+        const float* p = src + 4 * (y * sw + idx[x * ntaps + k]);
+        r += w * q8(p[0]); g += w * q8(p[1]); b += w * q8(p[2]); a += w * q8(p[3]);
+    }
+    float* o = dst + 4 * (y * dw + x);
+    // integer pipeline: every pass truncates to an 8-bit code
+    o[0] = floorf(fminf(r, 255.f)); o[1] = floorf(fminf(g, 255.f));
+    o[2] = floorf(fminf(b, 255.f)); o[3] = floorf(fminf(a, 255.f));
+}
+
+__global__ void tap_pass_v(const float* tmp, int dw, float* dst, int out_w, int out_h,
+                           int ox, int oy, int dh, const int* idx, const float* wgt, int ntaps)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= dw || y >= dh) return;
+    if (ox + x >= out_w || oy + y >= out_h) return;
+    float r = 0.f, g = 0.f, b = 0.f, a = 0.f;
+    for (int k = 0; k < ntaps; ++k) {
+        float w = wgt[y * ntaps + k];
+        const float* p = tmp + 4 * (idx[y * ntaps + k] * dw + x);
+        r += w * p[0]; g += w * p[1]; b += w * p[2]; a += w * p[3];
+    }
+    float* o = dst + 4 * ((oy + y) * out_w + ox + x);
+    const float k255 = 1.f / 255.f;
+    o[0] = floorf(fminf(fmaxf(r, 0.f), 255.f)) * k255;
+    o[1] = floorf(fminf(fmaxf(g, 0.f), 255.f)) * k255;
+    o[2] = floorf(fminf(fmaxf(b, 0.f), 255.f)) * k255;
+    o[3] = floorf(fminf(fmaxf(a, 0.f), 255.f)) * k255;
+}
+
 }  // extern "C"
 """
 
@@ -663,4 +705,45 @@ def gaussian_blur(img: cp.ndarray, sigma: float) -> cp.ndarray:
     grid, block = _grid2(w, h)
     _k("blur_pass")(grid, block, (img, tmp, np.int32(w), np.int32(h), k, np.int32(radius), np.int32(1)))
     _k("blur_pass")(grid, block, (tmp, out, np.int32(w), np.int32(h), k, np.int32(radius), np.int32(0)))
+    return out
+
+
+def _axis_taps(n_out: int, n_in: int, src0: float, srclen: float) -> tuple[np.ndarray, np.ndarray]:
+    """Tap table of gavl's scaler (as measured against MLT's frei0r scale0tilt).
+
+    Triangle filter of radius R = ceil(scale ratio) (1 when enlarging) centred on the pixel-centre
+    source position; taps cover [round(c) - R, round(c) + R - 1]; positions outside the picture
+    clamp to the edge pixel; weights are normalised and truncated to 16-bit fixed point.  Each pass
+    truncates its 8-bit result (the scaler is an integer pipeline).
+    """
+    ratio = srclen / n_out
+    R = max(1, int(math.ceil(ratio - 1e-9)))
+    c = src0 + (np.arange(n_out) + 0.5) * ratio - 0.5
+    rc = np.floor(c + 0.5).astype(np.int64)
+    idx = rc[:, None] - R + np.arange(2 * R)[None, :]
+    wgt = np.maximum(0.0, 1.0 - np.abs(idx - c[:, None]) / R)
+    wgt /= wgt.sum(axis=1, keepdims=True)
+    wgt = np.floor(wgt * 65536.0) / 65536.0          # 16-bit fixed-point weights (truncated)
+    return np.clip(idx, 0, n_in - 1).astype(np.int32), wgt.astype(np.float32)
+
+
+def resample_rect(img: cp.ndarray, src_rect: tuple[float, float, float, float],
+                  dst_rect: tuple[int, int, int, int]) -> cp.ndarray:
+    """Scale ``src_rect`` (float pixels) of ``img`` into ``dst_rect`` (ints) of a transparent frame."""
+    h, w = img.shape[:2]
+    sx, sy, sw, sh = src_rect
+    dx, dy, dw, dh = dst_rect
+    out = cp.zeros_like(img)
+    if dw <= 0 or dh <= 0 or dx >= w or dy >= h:
+        return out
+    ix, wx = _axis_taps(dw, w, sx, sw)
+    iy, wy = _axis_taps(dh, h, sy, sh)
+    ix, wx, iy, wy = (cp.asarray(a) for a in (ix, wx, iy, wy))
+    tmp = cp.empty((h, dw, 4), dtype=cp.float32)
+    grid, block = _grid2(dw, h)
+    _k("tap_pass_h")(grid, block, (img, np.int32(w), np.int32(h), tmp, np.int32(dw), ix, wx,
+                                   np.int32(ix.shape[1])))
+    grid, block = _grid2(dw, dh)
+    _k("tap_pass_v")(grid, block, (tmp, np.int32(dw), out, np.int32(w), np.int32(h), np.int32(dx),
+                                   np.int32(dy), np.int32(dh), iy, wy, np.int32(iy.shape[1])))
     return out

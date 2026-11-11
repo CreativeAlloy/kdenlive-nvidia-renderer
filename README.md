@@ -42,9 +42,9 @@ There is also a command-line front end:
 |---|---|
 | Clips | video/audio files (`avformat`), images (`qimage`/`pixbuf`), color clips, speed changes (`timewarp`), nested sequences, rotated phone video |
 | Timeline | tracks, blanks, track mute/hide, clip/track/master effects, effect in/out, keyframes (all MLT interpolation types) |
-| Video effects | Brightness, Contrast, Saturation (frei0r), Exposure, Color Levels, Fade from/to black, Transform (`qtblend`), Horizontal/Vertical flip, Gaussian blur |
+| Video effects | Brightness, Contrast, Saturation (frei0r), Exposure, Color Levels, Fade from/to black, Transform (`qtblend`), Crop/Scale/Tilt (frei0r `scale0tilt`), Horizontal/Vertical flip, Gaussian blur |
 | Transitions | Composite & Transform (`qtblend`, all Qt blend modes), Composite / Wipe (`composite`), Dissolve / Wipe (`luma`, including luma files) |
-| Audio | Volume / Gain / Fade in / Fade out / Mute, Pan / Balance, Mono, Channel copy, audio crossfades and track mixing |
+| Audio | Volume / Gain / Fade in / Fade out / Mute, Pan / Balance, Mono, Channel copy, Deesser, audio crossfades and track mixing |
 | Output | H.264 / HEVC / AV1 via NVENC, MP4 / MKV / MOV, AAC audio, custom resolution and frame rate, whole timeline or timeline zone |
 
 The app lists every effect in the opened project and marks each one as **GPU** or
@@ -55,14 +55,16 @@ never approximated silently. Title clips (`kdenlivetitle`) are not supported yet
 
 `tests/fidelity.py` builds synthetic Kdenlive projects and renders each one twice: once with Kdenlive's own `melt` (from the Flatpak) as the reference, and once with this renderer. It then compares the frames:
 
-| Case | Luma PSNR vs. Kdenlive |
+| Case | Result vs. Kdenlive (luma PSNR) |
 |---|---|
 | plain clip, cuts and blanks, fade from black | bit-exact |
 | frei0r brightness / contrast / saturation, exposure, color levels | 46–54 dB |
 | keyframed Transform with rotation and opacity | 44 dB |
+| Crop, Scale and Tilt (crops, zooms, shrinks, keyframes) | 45–64 dB |
+| Deesser audio | bit-exact |
 | real project (`Romance.kdenlive`, 5 chained color effects) | 58 dB |
 
-For reference, results above roughly 45 dB look the same to the eye.
+For reference, results above roughly 45 dB look the same to the eye. `tests/audio_fidelity.py` does the same for audio and compares the samples.
 
 ## Speed
 
@@ -72,6 +74,8 @@ On a 7-minute 720p project with 5 color effects, on an RTX 5090:
 |---|---|
 | Kdenlive / melt (CPU) | ~6 min (~28 fps) |
 | this renderer, H.264 NVENC | **38 s** (~290 fps) |
+
+The Deesser is the one audio effect that runs sample by sample, so it can't be vectorised; its state lives on the GPU. It costs about 2.6 ms per video frame, so a Deesser on a clip covering this whole 7-minute project adds roughly 27 s.
 
 ## Note on Kdenlive and number locales
 

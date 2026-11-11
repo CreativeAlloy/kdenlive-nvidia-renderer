@@ -102,6 +102,25 @@ CASES = {
         filt("f5", "frei0r.saturat0r", Saturation=K + "0.146", version="0.3"))]),
 }
 
+def s0t(**kw):
+    """frei0r scale0tilt filter; kw uses short names (cl, cr, ct, cb, sx, sy, tx, ty)."""
+    names = {"cl": "Clip left", "cr": "Clip right", "ct": "Clip top", "cb": "Clip bottom",
+             "sx": "Scale X", "sy": "Scale Y", "tx": "Tilt X", "ty": "Tilt Y"}
+    props = {names[k]: str(v) for k, v in kw.items()}
+    return filt("f1", "frei0r.scale0tilt", kdenlive_id="frei0r.scale0tilt", **props)
+
+
+CASES.update({
+    "s0t_default": lambda: project([(0, N - 1, s0t(sx=0.5, sy=0.5, tx=0.5, ty=0.5))]),
+    "s0t_zoom": lambda: project([(0, N - 1, s0t(sx=0.8, sy=0.8, tx=0.5, ty=0.5))]),
+    "s0t_zoom_centre": lambda: project([(0, N - 1, s0t(sx=0.8, sy=0.8, tx=0.35, ty=0.35))]),
+    "s0t_shrink": lambda: project([(0, N - 1, s0t(sx=0.25, sy=0.25, tx=0.75, ty=0.75))]),
+    "s0t_crop": lambda: project([(0, N - 1, s0t(cl=0.1, cr=0.15, ct=0.2, cb=0.05, sx=0.5, sy=0.5, tx=0.5, ty=0.5))]),
+    "s0t_anim": lambda: project([(0, N - 1, s0t(sx="00:00:00.000=0.5;00:00:01.960=0.8", sy="00:00:00.000=0.5;00:00:01.960=0.8",
+                                                tx="00:00:00.000=0.5;00:00:01.960=0.35", ty="00:00:00.000=0.5;00:00:01.960=0.35"))]),
+    "s0t_odd": lambda: project([(0, N - 1, s0t(cl=0.07, ct=0.03, sx=0.63, sy=0.41, tx=0.44, ty=0.58))]),
+})
+
 
 def host(cmd, **kw):
     return subprocess.run(cmd, **kw)

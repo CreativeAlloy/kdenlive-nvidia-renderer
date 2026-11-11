@@ -365,6 +365,66 @@ def f_vflip(ctx, layer, use):
     return layer
 
 
+
+def _scale0tilt_geometry(w: int, h: int, cl, cr, ct, cb, sx, sy, tx, ty):
+    """update_scaler() of frei0r scale0tilt: returns (src_rect, dst_rect) or None when nothing is drawn.
+
+    Parameters are the plugin's internal values (scale already doubled, tilt already mapped to -1..1).
+    The C code keeps the rectangles in ``float``, so this does too.
+    """
+    f32 = np.float32
+    src_x, src_y = f32(w * cl), f32(h * ct)
+    src_w, src_h = f32(w * (1.0 - cl - cr)), f32(h * (1.0 - ct - cb))
+    dst_x, dst_y = f32(w * cl * sx + tx * w), f32(h * ct * sy + ty * h)
+    dst_w, dst_h = f32(w * (1.0 - cl - cr) * sx), f32(h * (1.0 - ct - cb) * sy)
+    eps = 1e-6
+    if dst_w < eps or dst_h < eps or src_w < eps or src_h < eps:
+        return None
+    fw, fh = f32(w), f32(h)
+    if dst_x + dst_w > fw:
+        src_w = f32(src_w * ((fw - dst_x) / dst_w))
+        dst_w = f32(fw - dst_x)
+    if dst_y + dst_h > fh:
+        src_h = f32(src_h * ((fh - dst_y) / dst_h))
+        dst_h = f32(fh - dst_y)
+    if dst_x < 0:
+        src_x = f32(src_x - dst_x * (src_w / dst_w))
+        src_w = f32(src_w * ((dst_w + dst_x) / dst_w))
+        dst_w = f32(dst_w + dst_x)
+        dst_x = f32(0)
+    if dst_y < 0:
+        src_y = f32(src_y - dst_y * (src_h / dst_h))
+        src_h = f32(src_h * ((dst_h + dst_y) / dst_h))
+        dst_h = f32(dst_h + dst_y)
+        dst_y = f32(0)
+    if dst_w < eps or dst_h < eps or src_w < eps or src_h < eps:
+        return None
+
+    def lroundf(v):      # C lroundf: half away from zero
+        v = float(v)
+        return int(math.floor(v + 0.5)) if v >= 0 else -int(math.floor(-v + 0.5))
+
+    return ((float(src_x), float(src_y), float(src_w), float(src_h)),
+            (lroundf(dst_x), lroundf(dst_y), lroundf(dst_w), lroundf(dst_h)))
+
+
+@vfilter("frei0r.scale0tilt")
+def f_frei0r_scale0tilt(ctx, layer, use):
+    """Crop, Scale and Tilt (frei0r scale0tilt): crop, then scale and place the picture; the rest is transparent."""
+    def p(name, index, default):
+        return p_double(ctx, use, (name, str(index)), default)
+    cl, cr = p("Clip left", 0, 0.0), p("Clip right", 1, 0.0)
+    ct, cb = p("Clip top", 2, 0.0), p("Clip bottom", 3, 0.0)
+    sx, sy = p("Scale X", 4, 0.5) * 2.0, p("Scale Y", 5, 0.5) * 2.0
+    tx, ty = p("Tilt X", 6, 0.5) * 2.0 - 1.0, p("Tilt Y", 7, 0.5) * 2.0 - 1.0
+    geo = _scale0tilt_geometry(layer.w, layer.h, cl, cr, ct, cb, sx, sy, tx, ty)
+    if geo is None:
+        layer.img = cp.zeros_like(layer.img)
+    else:
+        layer.img = gpu.resample_rect(layer.img, *geo)
+    return layer
+
+
 @vfilter("avfilter.gblur")
 def f_gblur(ctx, layer, use):
     sigma = p_double(ctx, use, "av.sigma", 0.5)
@@ -445,6 +505,38 @@ def a_panner(ctx, samples, use, frame):
         out[:, 1:2] = src * pos
         return out
     return samples
+
+
+
+def _ffmpeg_double_option(use, name: str, default: float, lo: float = 0.0, hi: float = 1.0) -> float:
+    """An FFmpeg double option as MLT's avfilter wrapper sets it: a value that does not parse or lies
+    outside the option's range is rejected by av_opt_set(), so the filter keeps its own default."""
+    v = _prop(use, name)
+    if v is None:
+        return default
+    try:
+        x = float(v)
+    except ValueError:
+        return default
+    return x if lo <= x <= hi else default
+
+
+@afilter("avfilter.deesser")
+def a_deesser(ctx, samples, use, frame):
+    """FFmpeg 'deesser' (bit-exact port).  The filter is a running recurrence: like MLT's avfilter
+    wrapper, one instance keeps its state for the whole render."""
+    from . import audio_gpu
+    intensity = _ffmpeg_double_option(use, "av.i", 0.0)
+    max_amount = _ffmpeg_double_option(use, "av.m", 0.5)
+    frequency = _ffmpeg_double_option(use, "av.f", 0.5)
+    mode_s = (_prop(use, "av.s") or "o").strip().lower()
+    mode = {"i": 0, "in": 0, "0": 0, "o": 1, "out": 1, "1": 1, "e": 2, "ess": 2, "2": 2}.get(mode_s, 1)
+    states = ctx.__dict__.setdefault("filter_states", {})
+    key = id(use.filter)
+    st = states.get(key)
+    if st is None or st.shape[0] != samples.shape[1]:
+        st = states[key] = audio_gpu.new_deesser_state(samples.shape[1])
+    return audio_gpu.deesser(samples, st, intensity, max_amount, frequency, mode, 48000)
 
 
 @afilter("audiomap", "channelcopy", "mono")
